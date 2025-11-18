@@ -1,0 +1,8 @@
+# Prevent database files from triggering rebuilds
+rudder.db
+rudder.db-shm
+rudder.db-wal
+*.db
+
+# Temporary chart files
+temp-charts/
