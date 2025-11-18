@@ -61,7 +61,7 @@ This project is an example of the "augmented expert" development model: using hi
 
 1.  **Clone the repo:**
     ```bash
-    git clone https://github.com/your-username/rudder.git
+    git clone https://github.com/rileyseaburg/rudder.git
     cd rudder
     ```
 2.  **Install dependencies:**
