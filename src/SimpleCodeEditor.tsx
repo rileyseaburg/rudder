@@ -1,7 +1,5 @@
 'use client'
 
-import { useState, useEffect } from 'react';
-
 interface SimpleCodeEditorProps {
   value: string;
   onChange: (value: string) => void;
@@ -13,6 +11,7 @@ interface SimpleCodeEditorProps {
 export default function SimpleCodeEditor({ 
   value, 
   onChange, 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   language = 'json', 
   height = '300px',
   placeholder = ''

@@ -21,5 +21,6 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
+  "exclude": ["src/catalyst-ui-kit/demo"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
