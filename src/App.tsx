@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Dialog,
@@ -14,10 +14,16 @@ import {
   XMarkIcon,
   ArrowPathIcon,
   ChevronRightIcon,
+  FunnelIcon,
+  ChevronUpDownIcon,
 } from '@heroicons/react/24/outline';
 import { Bars3Icon, MagnifyingGlassIcon } from '@heroicons/react/20/solid';
 import ReleaseEditor from './ReleaseEditor';
 import KubeconfigPaste from './KubeconfigPaste';
+import ContextSwitcher from './ContextSwitcher';
+
+type SortField = 'name' | 'namespace' | 'status' | 'updated';
+type SortDirection = 'asc' | 'desc';
 
 interface HelmRelease {
   name: string;
@@ -51,8 +57,94 @@ function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedRelease, setSelectedRelease] = useState<HelmRelease | null>(null);
   const [showKubeconfig, setShowKubeconfig] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  async function getReleases() {
+  // Extract unique namespaces for filtering
+  const namespaces = useMemo(() => {
+    const ns = [...new Set(helmData.map((r) => r.namespace))].sort();
+    return ['all', ...ns];
+  }, [helmData]);
+
+  // Filter releases based on search query and namespace
+  const filteredReleases = useMemo(() => {
+    return helmData.filter((release) => {
+      // Namespace filter
+      if (selectedNamespace !== 'all' && release.namespace !== selectedNamespace) {
+        return false;
+      }
+      // Search filter
+      if (!searchQuery.trim()) return true;
+      const query = searchQuery.toLowerCase();
+      return (
+        release.name.toLowerCase().includes(query) ||
+        release.namespace.toLowerCase().includes(query) ||
+        release.chart.toLowerCase().includes(query) ||
+        release.status.toLowerCase().includes(query)
+      );
+    });
+  }, [helmData, searchQuery, selectedNamespace]);
+
+  // Sort filtered releases
+  const sortedReleases = useMemo(() => {
+    return [...filteredReleases].sort((a, b) => {
+      let comparison = 0;
+      switch (sortField) {
+        case 'name':
+          comparison = a.name.localeCompare(b.name);
+          break;
+        case 'namespace':
+          comparison = a.namespace.localeCompare(b.namespace);
+          break;
+        case 'status':
+          comparison = a.status.localeCompare(b.status);
+          break;
+        case 'updated':
+          comparison = new Date(a.updated).getTime() - new Date(b.updated).getTime();
+          break;
+      }
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [filteredReleases, sortField, sortDirection]);
+
+  // Enhanced statistics
+  const stats = useMemo(() => ({
+    total: helmData.length,
+    deployed: helmData.filter((r) => r.status === 'deployed').length,
+    failed: helmData.filter((r) => r.status === 'failed').length,
+    pending: helmData.filter((r) => r.status.includes('pending')).length,
+    namespaces: new Set(helmData.map((r) => r.namespace)).size,
+    uniqueCharts: new Set(helmData.map((r) => r.chart.replace(/-\d+\.\d+\.\d+$/, ''))).size,
+  }), [helmData]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+K or Cmd+K to focus search
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      // Escape to clear search and blur
+      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
+        setSearchQuery('');
+        searchInputRef.current?.blur();
+      }
+      // Ctrl+R or Cmd+R to refresh (prevent browser refresh)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'r' && !e.shiftKey) {
+        e.preventDefault();
+        getReleases();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const getReleases = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -72,7 +164,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   async function handleKubeconfigSubmit(configText: string) {
     try {
@@ -84,9 +176,14 @@ function App() {
     }
   }
 
+  // Expose fetchReleases for context switcher
+  const fetchReleases = useCallback(() => {
+    getReleases();
+  }, [getReleases]);
+
   useEffect(() => {
     getReleases();
-  }, []);
+  }, [getReleases]);
 
   return (
     <>
@@ -207,11 +304,14 @@ function App() {
             </button>
 
             <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
-              <form action="#" method="GET" className="grid flex-1 grid-cols-1">
+              <form onSubmit={(e) => e.preventDefault()} className="grid flex-1 grid-cols-1">
                 <input
+                  ref={searchInputRef}
                   name="search"
-                  placeholder="Search releases..."
+                  placeholder="Search releases... (Ctrl+K)"
                   aria-label="Search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
                   className="col-start-1 row-start-1 block size-full bg-transparent pl-8 text-base text-gray-900 outline-hidden placeholder:text-gray-400 sm:text-sm/6 dark:text-white dark:placeholder:text-gray-500"
                 />
                 <MagnifyingGlassIcon
@@ -219,19 +319,68 @@ function App() {
                   className="pointer-events-none col-start-1 row-start-1 size-5 self-center text-gray-400 dark:text-gray-500"
                 />
               </form>
+              {/* Context Switcher */}
+              <div className="hidden lg:flex lg:items-center">
+                <ContextSwitcher 
+                  className="w-64"
+                  onContextChange={() => {
+                    // Refresh releases when context changes
+                    fetchReleases();
+                  }}
+                />
+              </div>
             </div>
           </div>
 
           <main className="lg:pr-96">
             <header className="flex items-center justify-between border-b border-gray-200 px-4 py-4 sm:px-6 sm:py-6 lg:px-8 dark:border-white/5">
-              <h1 className="text-base/7 font-semibold text-gray-900 dark:text-white">Helm Releases</h1>
+              <div className="flex items-center gap-4">
+                <h1 className="text-base/7 font-semibold text-gray-900 dark:text-white">Helm Releases</h1>
+                {/* Namespace filter */}
+                <div className="flex items-center gap-2">
+                  <FunnelIcon className="size-4 text-gray-400" />
+                  <select
+                    value={selectedNamespace}
+                    onChange={(e) => setSelectedNamespace(e.target.value)}
+                    className="block rounded-md border-0 py-1 pl-2 pr-8 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-indigo-600 text-xs dark:bg-gray-800 dark:text-white dark:ring-white/10"
+                  >
+                    {namespaces.map((ns) => (
+                      <option key={ns} value={ns}>
+                        {ns === 'all' ? 'All namespaces' : ns}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {/* Sort control */}
+                <div className="flex items-center gap-2">
+                  <ChevronUpDownIcon className="size-4 text-gray-400" />
+                  <select
+                    value={`${sortField}-${sortDirection}`}
+                    onChange={(e) => {
+                      const [field, dir] = e.target.value.split('-') as [SortField, SortDirection];
+                      setSortField(field);
+                      setSortDirection(dir);
+                    }}
+                    className="block rounded-md border-0 py-1 pl-2 pr-8 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-indigo-600 text-xs dark:bg-gray-800 dark:text-white dark:ring-white/10"
+                  >
+                    <option value="name-asc">Name A-Z</option>
+                    <option value="name-desc">Name Z-A</option>
+                    <option value="namespace-asc">Namespace A-Z</option>
+                    <option value="namespace-desc">Namespace Z-A</option>
+                    <option value="status-asc">Status A-Z</option>
+                    <option value="updated-desc">Recently Updated</option>
+                    <option value="updated-asc">Oldest Updated</option>
+                  </select>
+                </div>
+              </div>
 
               <button
                 onClick={getReleases}
                 disabled={loading}
                 className="flex items-center gap-x-1 rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs hover:bg-indigo-500 disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+                title="Refresh (Ctrl+R)"
               >
-                <ArrowPathIcon aria-hidden="true" className="-ml-1.5 size-5" />
+                <ArrowPathIcon aria-hidden="true" className={classNames("-ml-1.5 size-5", loading ? "animate-spin" : "")} />
                 {loading ? 'Loading...' : 'Refresh'}
               </button>
             </header>
@@ -247,10 +396,20 @@ function App() {
               <div className="px-4 py-4 sm:px-6 lg:px-8">
                 <div className="rounded-md bg-red-50 p-4 dark:bg-red-500/10">
                   <div className="flex">
-                    <div className="ml-3">
+                    <div className="ml-3 flex-1">
                       <h3 className="text-sm font-medium text-red-800 dark:text-red-400">Error</h3>
                       <div className="mt-2 text-sm text-red-700 dark:text-red-300">
                         <pre className="whitespace-pre-wrap font-mono text-xs">{error}</pre>
+                      </div>
+                      <div className="mt-4">
+                        <button
+                          type="button"
+                          onClick={getReleases}
+                          className="inline-flex items-center gap-x-1.5 rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-500"
+                        >
+                          <ArrowPathIcon className="-ml-0.5 size-4" />
+                          Retry
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -272,9 +431,25 @@ function App() {
                   Make sure Helm is installed and you have access to a Kubernetes cluster
                 </p>
               </div>
+            ) : filteredReleases.length === 0 ? (
+              <div className="px-4 py-12 text-center sm:px-6 lg:px-8">
+                <MagnifyingGlassIcon className="mx-auto h-12 w-12 text-gray-400" />
+                <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                  No releases match {searchQuery ? `"${searchQuery}"` : 'the selected filters'}
+                </p>
+                <button
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSelectedNamespace('all');
+                  }}
+                  className="mt-2 text-sm text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
+                >
+                  Clear filters
+                </button>
+              </div>
             ) : (
               <ul role="list" className="divide-y divide-gray-100 dark:divide-white/5">
-                {helmData.map((release) => (
+                {sortedReleases.map((release) => (
                   <li
                     key={`${release.namespace}-${release.name}`}
                     className="relative flex items-center space-x-4 px-4 py-4 sm:px-6 lg:px-8"
@@ -332,24 +507,53 @@ function App() {
               <h2 className="text-base/7 font-semibold text-gray-900 dark:text-white">Statistics</h2>
             </header>
             <div className="px-4 py-6 sm:px-6 lg:px-8">
-              <dl className="space-y-6">
-                <div>
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Total Releases</dt>
-                  <dd className="mt-1 text-3xl font-semibold text-gray-900 dark:text-white">{helmData.length}</dd>
+              <dl className="grid grid-cols-2 gap-4">
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Total Releases</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{stats.total}</dd>
                 </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Deployed</dt>
-                  <dd className="mt-1 text-3xl font-semibold text-green-600 dark:text-green-400">
-                    {helmData.filter((r) => r.status === 'deployed').length}
-                  </dd>
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Namespaces</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{stats.namespaces}</dd>
                 </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Failed</dt>
-                  <dd className="mt-1 text-3xl font-semibold text-red-600 dark:text-red-400">
-                    {helmData.filter((r) => r.status === 'failed').length}
-                  </dd>
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+                  <dt className="text-xs font-medium text-green-600 dark:text-green-400">Deployed</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-green-600 dark:text-green-400">{stats.deployed}</dd>
+                </div>
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+                  <dt className="text-xs font-medium text-red-600 dark:text-red-400">Failed</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-red-600 dark:text-red-400">{stats.failed}</dd>
+                </div>
+                {stats.pending > 0 && (
+                  <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+                    <dt className="text-xs font-medium text-yellow-600 dark:text-yellow-400">Pending</dt>
+                    <dd className="mt-1 text-2xl font-semibold text-yellow-600 dark:text-yellow-400">{stats.pending}</dd>
+                  </div>
+                )}
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-900/5 dark:bg-gray-800 dark:ring-white/10">
+                  <dt className="text-xs font-medium text-gray-500 dark:text-gray-400">Unique Charts</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{stats.uniqueCharts}</dd>
                 </div>
               </dl>
+              
+              {/* Keyboard shortcuts help */}
+              <div className="mt-8 rounded-lg bg-gray-100 p-4 dark:bg-gray-800/50">
+                <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-3">Keyboard Shortcuts</h3>
+                <dl className="space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500 dark:text-gray-400">Focus search</dt>
+                    <dd className="font-mono text-gray-700 dark:text-gray-300">Ctrl+K</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500 dark:text-gray-400">Clear search</dt>
+                    <dd className="font-mono text-gray-700 dark:text-gray-300">Esc</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500 dark:text-gray-400">Refresh</dt>
+                    <dd className="font-mono text-gray-700 dark:text-gray-300">Ctrl+R</dd>
+                  </div>
+                </dl>
+              </div>
             </div>
           </aside>
         </div>

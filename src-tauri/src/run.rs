@@ -41,7 +41,21 @@ pub fn run() {
             clear_schema_cache,
             delete_schema_cache_entry,
             get_helm_history,
-            helm_rollback
+            helm_rollback,
+            get_kube_context,
+            list_kube_contexts,
+            switch_kube_context,
+            get_release_pods,
+            get_pod_logs,
+            diagnose_release,
+            restart_deployment,
+            delete_failed_pods,
+            describe_pod,
+            helm_dry_run,
+            get_release_values,
+            get_release_manifest,
+            run_shell_command,
+            exec_in_pod
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

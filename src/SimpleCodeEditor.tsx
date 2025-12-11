@@ -11,7 +11,7 @@ interface SimpleCodeEditorProps {
 export default function SimpleCodeEditor({ 
   value, 
   onChange, 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // @ts-expect-error - language is accepted for API compatibility but not used in simple textarea
   language = 'json', 
   height = '300px',
   placeholder = ''

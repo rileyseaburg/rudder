@@ -3,9 +3,13 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
-import { XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, ArrowPathIcon, EyeIcon, PlayIcon } from '@heroicons/react/24/outline';
 import RecursiveForm from './SchemaForm';
 import SimpleCodeEditor from './SimpleCodeEditor';
+import LogViewer from './LogViewer';
+import Troubleshooter from './Troubleshooter';
+import DiffViewer from './DiffViewer';
+import QuickTerminal from './QuickTerminal';
 
 interface ReleaseEditorProps {
   releaseName: string;
@@ -37,7 +41,7 @@ interface HelmRevision {
 }
 
 function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVersion, repoName = "default", onClose, onSuccess }: ReleaseEditorProps) {
-  const [activeTab, setActiveTab] = useState<'values' | 'history'>('values');
+  const [activeTab, setActiveTab] = useState<'values' | 'history' | 'logs' | 'troubleshoot' | 'terminal'>('values');
   const [schema, setSchema] = useState<Record<string, SchemaProperty> | null>(null);
   const [formData, setFormData] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(true);
@@ -53,6 +57,13 @@ function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVers
   const [historyError, setHistoryError] = useState<string>('');
   const [revisions, setRevisions] = useState<HelmRevision[]>([]);
   const [rollingBack, setRollingBack] = useState<boolean>(false);
+
+  // Preview/Dry-run state
+  const [showPreview, setShowPreview] = useState<boolean>(false);
+  const [dryRunning, setDryRunning] = useState<boolean>(false);
+  const [dryRunResult, setDryRunResult] = useState<string>('');
+  const [currentManifest, setCurrentManifest] = useState<string>('');
+  const [_currentYamlValues, setCurrentYamlValues] = useState<string>('');
 
   useEffect(() => {
     loadSchema();
@@ -179,6 +190,58 @@ function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVers
     }
   }
 
+  async function handlePreviewChanges() {
+    try {
+      setDryRunning(true);
+      setError('');
+      setDryRunResult('');
+      
+      let valuesJson;
+      if (schema && Object.keys(schema).length === 0 && rawValues) {
+        valuesJson = rawValues;
+      } else {
+        valuesJson = JSON.stringify(formData);
+      }
+
+      // Get current values for comparison
+      try {
+        const currentVals = await invoke<string>('get_release_values', {
+          releaseName,
+          namespace,
+        });
+        setCurrentYamlValues(currentVals);
+      } catch {
+        setCurrentYamlValues('# No existing values found (new release?)');
+      }
+
+      // Get current manifest for comparison
+      try {
+        const manifest = await invoke<string>('get_release_manifest', {
+          releaseName,
+          namespace,
+        });
+        setCurrentManifest(manifest);
+      } catch {
+        setCurrentManifest('# No existing manifest found (new release?)');
+      }
+
+      // Run dry-run to get new manifest
+      const dryRunOutput = await invoke<string>('helm_dry_run', {
+        releaseName,
+        chartPath,
+        namespace,
+        valuesJson,
+      });
+
+      setDryRunResult(dryRunOutput);
+      setShowPreview(true);
+    } catch (e) {
+      setError(`Dry run failed: ${e}`);
+    } finally {
+      setDryRunning(false);
+    }
+  }
+
   async function handleUpgrade() {
     try {
       setUpgrading(true);
@@ -270,11 +333,41 @@ function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVers
                     >
                       History
                     </button>
+                    <button
+                      onClick={() => setActiveTab('logs')}
+                      className={`${
+                        activeTab === 'logs'
+                          ? 'border-indigo-500 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
+                          : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                      } whitespace-nowrap border-b-2 px-1 pb-4 text-sm font-medium`}
+                    >
+                      Logs
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('troubleshoot')}
+                      className={`${
+                        activeTab === 'troubleshoot'
+                          ? 'border-indigo-500 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
+                          : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                      } whitespace-nowrap border-b-2 px-1 pb-4 text-sm font-medium`}
+                    >
+                      🔧 Troubleshoot
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('terminal')}
+                      className={`${
+                        activeTab === 'terminal'
+                          ? 'border-indigo-500 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
+                          : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                      } whitespace-nowrap border-b-2 px-1 pb-4 text-sm font-medium`}
+                    >
+                      💻 Terminal
+                    </button>
                   </nav>
                 </div>
 
                 {/* Content */}
-                <div className="mt-6 max-h-96 overflow-y-auto">
+                <div className={`mt-6 ${activeTab === 'logs' || activeTab === 'troubleshoot' || activeTab === 'terminal' ? 'h-96 overflow-y-auto' : 'max-h-96 overflow-y-auto'}`}>
                   {/* Values Tab */}
                   {activeTab === 'values' && (
                     <>
@@ -465,6 +558,21 @@ function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVers
                       )}
                     </>
                   )}
+
+                  {/* Logs Tab */}
+                  {activeTab === 'logs' && (
+                    <LogViewer releaseName={releaseName} namespace={namespace} />
+                  )}
+
+                  {/* Troubleshoot Tab */}
+                  {activeTab === 'troubleshoot' && (
+                    <Troubleshooter releaseName={releaseName} namespace={namespace} />
+                  )}
+
+                  {/* Terminal Tab */}
+                  {activeTab === 'terminal' && (
+                    <QuickTerminal namespace={namespace} />
+                  )}
                 </div>
 
                 {/* Footer */}
@@ -476,27 +584,50 @@ function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVers
                     <button
                       type="button"
                       onClick={onClose}
-                      disabled={upgrading || rollingBack}
+                      disabled={upgrading || rollingBack || dryRunning}
                       className="rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-xs ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:opacity-50 dark:bg-white/10 dark:text-white dark:ring-white/10 dark:hover:bg-white/20"
                     >
-                      {activeTab === 'history' ? 'Close' : 'Cancel'}
+                      {activeTab === 'history' || activeTab === 'logs' || activeTab === 'troubleshoot' || activeTab === 'terminal' ? 'Close' : 'Cancel'}
                     </button>
                     {activeTab === 'values' && (
-                      <button
-                        type="button"
-                        onClick={handleUpgrade}
-                        disabled={upgrading || !schema || loading}
-                        className="inline-flex items-center gap-x-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs hover:bg-indigo-500 disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400"
-                      >
-                        {upgrading ? (
-                          <>
-                            <ArrowPathIcon className="-ml-0.5 size-5 animate-spin" />
-                            Upgrading...
-                          </>
-                        ) : (
-                          'Upgrade Release'
-                        )}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={handlePreviewChanges}
+                          disabled={dryRunning || upgrading || !schema || loading}
+                          className="inline-flex items-center gap-x-2 rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-xs ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:opacity-50 dark:bg-white/10 dark:text-white dark:ring-white/10 dark:hover:bg-white/20"
+                        >
+                          {dryRunning ? (
+                            <>
+                              <ArrowPathIcon className="-ml-0.5 size-5 animate-spin" />
+                              Running...
+                            </>
+                          ) : (
+                            <>
+                              <EyeIcon className="-ml-0.5 size-5" />
+                              Preview Changes
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleUpgrade}
+                          disabled={upgrading || !schema || loading}
+                          className="inline-flex items-center gap-x-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs hover:bg-indigo-500 disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+                        >
+                          {upgrading ? (
+                            <>
+                              <ArrowPathIcon className="-ml-0.5 size-5 animate-spin" />
+                              Upgrading...
+                            </>
+                          ) : (
+                            <>
+                              <PlayIcon className="-ml-0.5 size-5" />
+                              Upgrade Release
+                            </>
+                          )}
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -505,6 +636,86 @@ function ReleaseEditor({ releaseName, namespace, chartPath, chartName, chartVers
           </DialogPanel>
         </div>
       </div>
+
+      {/* Preview Dialog */}
+      {showPreview && (
+        <Dialog open={showPreview} onClose={() => setShowPreview(false)} className="relative z-[60]">
+          <DialogBackdrop
+            transition
+            className="fixed inset-0 bg-gray-500/75 transition-opacity data-closed:opacity-0 data-enter:duration-300 data-enter:ease-out data-leave:duration-200 data-leave:ease-in dark:bg-gray-900/80"
+          />
+
+          <div className="fixed inset-0 z-10 w-screen overflow-y-auto">
+            <div className="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
+              <DialogPanel
+                transition
+                className="relative transform overflow-hidden rounded-lg bg-white px-4 pb-4 pt-5 text-left shadow-xl transition-all data-closed:translate-y-4 data-closed:opacity-0 data-enter:duration-300 data-enter:ease-out data-leave:duration-200 data-leave:ease-in sm:my-8 sm:w-full sm:max-w-5xl sm:p-6 data-closed:sm:translate-y-0 data-closed:sm:scale-95 dark:bg-gray-800"
+              >
+                <div className="absolute top-0 right-0 hidden pt-4 pr-4 sm:block">
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview(false)}
+                    className="rounded-md bg-white text-gray-400 hover:text-gray-500 dark:bg-gray-800 dark:text-gray-500 dark:hover:text-white"
+                  >
+                    <span className="sr-only">Close</span>
+                    <XMarkIcon aria-hidden="true" className="size-6" />
+                  </button>
+                </div>
+
+                <div>
+                  <DialogTitle as="h3" className="text-xl font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                    <EyeIcon className="size-6 text-indigo-500" />
+                    Preview Changes (Dry Run)
+                  </DialogTitle>
+                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    Review what will change when you upgrade. This is a dry run - no changes have been applied yet.
+                  </p>
+
+                  <div className="mt-6 max-h-[60vh] overflow-y-auto">
+                    <DiffViewer
+                      oldContent={currentManifest}
+                      newContent={dryRunResult}
+                      oldLabel="Current Manifest"
+                      newLabel="New Manifest (Dry Run)"
+                    />
+                  </div>
+
+                  <div className="mt-6 flex justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowPreview(false)}
+                      className="rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-xs ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:bg-white/10 dark:text-white dark:ring-white/10 dark:hover:bg-white/20"
+                    >
+                      Go Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowPreview(false);
+                        handleUpgrade();
+                      }}
+                      disabled={upgrading}
+                      className="inline-flex items-center gap-x-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs hover:bg-indigo-500 disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+                    >
+                      {upgrading ? (
+                        <>
+                          <ArrowPathIcon className="-ml-0.5 size-5 animate-spin" />
+                          Applying...
+                        </>
+                      ) : (
+                        <>
+                          <PlayIcon className="-ml-0.5 size-5" />
+                          Apply Changes
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </DialogPanel>
+            </div>
+          </div>
+        </Dialog>
+      )}
     </Dialog>
   );
 }
